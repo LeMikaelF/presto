@@ -50,7 +50,7 @@ public class FileTableDescriptionSupplier
 
     private final JsonCodec<KafkaTopicDescription> topicDescriptionCodec;
     private final File tableDescriptionDir;
-    private final String defaultSchema;
+    private final SchemaTableNameFactory tableNameFactory;
     private final Set<String> tableNames;
 
     @Inject
@@ -61,7 +61,7 @@ public class FileTableDescriptionSupplier
         requireNonNull(config, "config is null");
         requireNonNull(kafkaConnectorConfig, "kafkaConfig is null");
         this.tableDescriptionDir = config.getTableDescriptionDir();
-        this.defaultSchema = kafkaConnectorConfig.getDefaultSchema();
+        this.tableNameFactory = new SchemaTableNameFactory(kafkaConnectorConfig.getDefaultSchema());
         this.tableNames = ImmutableSet.copyOf(config.getTableNames());
     }
 
@@ -82,9 +82,9 @@ public class FileTableDescriptionSupplier
             for (File file : listFiles(tableDescriptionDir)) {
                 if (file.isFile() && file.getName().endsWith(".json")) {
                     KafkaTopicDescription table = topicDescriptionCodec.fromJson(readAllBytes(file.toPath()));
-                    String schemaName = table.getSchemaName().orElse(defaultSchema);
-                    log.debug("Kafka table %s.%s: %s", schemaName, table.getTableName(), table);
-                    builder.put(new SchemaTableName(schemaName, table.getTableName()), table);
+                    SchemaTableName schemaTableName = tableNameFactory.create(table.getSchemaName().orElse(null), table.getTableName());
+                    log.debug("Kafka table %s: %s", schemaTableName, table);
+                    builder.put(schemaTableName, table);
                 }
             }
 
@@ -94,26 +94,21 @@ public class FileTableDescriptionSupplier
 
             builder = ImmutableMap.builder();
             for (String definedTable : tableNames) {
-                SchemaTableName tableName;
-                try {
-                    tableName = SchemaTableName.valueOf(definedTable);
-                }
-                catch (IllegalArgumentException iae) {
-                    tableName = new SchemaTableName(defaultSchema, definedTable);
-                }
+                SchemaTableName schemaTableName = this.tableNameFactory.create(definedTable);
 
-                if (tableDefinitions.containsKey(tableName)) {
-                    KafkaTopicDescription kafkaTable = tableDefinitions.get(tableName);
-                    log.debug("Found Table definition for %s: %s", tableName, kafkaTable);
-                    builder.put(tableName, kafkaTable);
+                if (tableDefinitions.containsKey(schemaTableName)) {
+                    KafkaTopicDescription kafkaTable = tableDefinitions.get(schemaTableName);
+                    log.debug("Found Table definition for %s: %s", schemaTableName, kafkaTable);
+                    builder.put(schemaTableName, kafkaTable);
                 }
                 else {
                     // A dummy table definition only supports the internal columns.
-                    log.debug("Created dummy Table definition for %s", tableName);
-                    builder.put(tableName, new KafkaTopicDescription(
-                            tableName.getTableName(),
-                            Optional.ofNullable(tableName.getSchemaName()),
-                            definedTable,
+                    log.debug("Created dummy Table definition for %s", schemaTableName);
+
+                    builder.put(schemaTableName, new KafkaTopicDescription(
+                            schemaTableName.getTableName(),
+                            Optional.of(schemaTableName.getSchemaName()),
+                            schemaTableName.getTableName(),
                             Optional.of(new KafkaTopicFieldGroup(DummyRowDecoder.NAME, Optional.empty(), ImmutableList.of())),
                             Optional.of(new KafkaTopicFieldGroup(DummyRowDecoder.NAME, Optional.empty(), ImmutableList.of()))));
                 }
